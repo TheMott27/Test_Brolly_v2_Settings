@@ -173,6 +173,35 @@ function AppearanceTab({ s, set }: { s: BrollySettings; set: (k: keyof BrollySet
 // Tab 2: Weather
 // ─────────────────────────────────────────────────────────────────────────────
 function WeatherTab({ s, set }: { s: BrollySettings; set: (k: keyof BrollySettings, v: unknown) => void }) {
+  const [locationInfo, setLocationInfo] = useState<string | null>(null)
+  const [confirming, setConfirming] = useState(false)
+
+  function handleConfirmLocation() {
+    const loc = s.KEY_CUSTOM_LOCATION.trim()
+    if (!loc) {
+      setLocationInfo('Using GPS location')
+      return
+    }
+    setConfirming(true)
+    // Use Open-Meteo geocoding API to look up the city
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(loc)}&count=1&language=en&format=json`
+    fetch(url)
+      .then(r => r.json())
+      .then(data => {
+        if (data.results && data.results.length > 0) {
+          const r = data.results[0]
+          const parts = [r.name, r.admin1, r.country].filter(Boolean)
+          const postcode = r.postcodes ? r.postcodes[0] : null
+          const info = parts.join(', ') + (postcode ? ` · ${postcode}` : '')
+          setLocationInfo(info)
+        } else {
+          setLocationInfo('Location not found')
+        }
+      })
+      .catch(() => setLocationInfo('Could not confirm location'))
+      .finally(() => setConfirming(false))
+  }
+
   return (
     <>
       <Section title="Weather Visibility">
@@ -190,10 +219,16 @@ function WeatherTab({ s, set }: { s: BrollySettings; set: (k: keyof BrollySettin
           <span className="row-label">Custom location</span>
           <input
             type="text"
-            placeholder="City name or lat,lon (leave empty for GPS)"
+            placeholder="City, Country, Postcode (leave empty for GPS)"
             value={s.KEY_CUSTOM_LOCATION}
-            onChange={e => set('KEY_CUSTOM_LOCATION', e.target.value)}
+            onChange={e => { set('KEY_CUSTOM_LOCATION', e.target.value); setLocationInfo(null) }}
           />
+        </div>
+        <div className="row">
+          <button className="btn-confirm-location" onClick={handleConfirmLocation} disabled={confirming}>
+            {confirming ? 'Confirming…' : 'Confirm GPS Location'}
+          </button>
+          {locationInfo && <span className="location-info">{locationInfo}</span>}
         </div>
       </Section>
 
@@ -246,12 +281,15 @@ function WeatherTab({ s, set }: { s: BrollySettings; set: (k: keyof BrollySettin
 // Tab 3: Alerts
 // ─────────────────────────────────────────────────────────────────────────────
 function AlertsTab({
-  s, set, onTestBattery, onTestBT
+  s, set, onTestBattery, onTestBT, onTestCriticalBattery, onResetAlerts, onResetAll
 }: {
   s: BrollySettings
   set: (k: keyof BrollySettings, v: unknown) => void
   onTestBattery: () => void
   onTestBT: () => void
+  onTestCriticalBattery: () => void
+  onResetAlerts: () => void
+  onResetAll: () => void
 }) {
   return (
     <>
@@ -262,14 +300,13 @@ function AlertsTab({
           onChange={v => set('KEY_VIBRATE_BT_RECONNECT', v ? 1 : 0)} />
         <Toggle label="Change minute hand on disconnect" value={!!s.KEY_BT_DISCONNECT_MIN_INNER_RED}
           onChange={v => set('KEY_BT_DISCONNECT_MIN_INNER_RED', v ? 1 : 0)} />
-        <PebbleColorPicker label="Disconnect outer colour" value={s.KEY_BT_DISCONNECT_OUTER_COLOR}
-          onChange={v => set('KEY_BT_DISCONNECT_OUTER_COLOR', v)} />
-        <PebbleColorPicker label="Disconnect inner colour" value={s.KEY_BT_DISCONNECT_INNER_COLOR}
-          onChange={v => set('KEY_BT_DISCONNECT_INNER_COLOR', v)} />
+        {/* Single colour picker that updates both outer and inner disconnect colours */}
+        <PebbleColorPicker label="Disconnect colour" value={s.KEY_BT_DISCONNECT_OUTER_COLOR}
+          onChange={v => { set('KEY_BT_DISCONNECT_OUTER_COLOR', v); set('KEY_BT_DISCONNECT_INNER_COLOR', v) }} />
       </Section>
 
       <Section title="Centre Cap — Battery">
-        <SelectRow label="Outer ring alert threshold" value={s.KEY_BATTERY_RING_THRESHOLD}
+        <SelectRow label="Low battery alert threshold" value={s.KEY_BATTERY_RING_THRESHOLD}
           options={[
             { label: 'Off', value: 0 },
             { label: '50%', value: 50 },
@@ -279,7 +316,7 @@ function AlertsTab({
             { label: '10%', value: 10 },
           ]}
           onChange={v => set('KEY_BATTERY_RING_THRESHOLD', v)} />
-        <SelectRow label="Centre dot alert threshold" value={s.KEY_BATTERY_CENTER_THRESHOLD}
+        <SelectRow label="Critical battery alert threshold" value={s.KEY_BATTERY_CENTER_THRESHOLD}
           options={[
             { label: 'Off', value: 0 },
             { label: '20%', value: 20 },
@@ -291,10 +328,22 @@ function AlertsTab({
 
       <Section title="Test Buttons">
         <div className="row">
-          <button className="btn-test" onClick={onTestBattery}>Test battery alert</button>
+          <button className="btn-test" onClick={onTestBattery}>Test low battery alert</button>
+        </div>
+        <div className="row">
+          <button className="btn-test" onClick={onTestCriticalBattery}>Test critical battery alert</button>
         </div>
         <div className="row">
           <button className="btn-test" onClick={onTestBT}>Test BT disconnect</button>
+        </div>
+      </Section>
+
+      <Section title="Reset">
+        <div className="row">
+          <button className="btn-reset" onClick={onResetAlerts}>Reset colours</button>
+        </div>
+        <div className="row">
+          <button className="btn-reset-all" onClick={onResetAll}>Reset ALL settings</button>
         </div>
       </Section>
     </>
@@ -320,7 +369,6 @@ export default function App() {
   }
 
   function handleSave() {
-    // Build payload — exclude string keys that need special handling
     const payload: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(settings)) {
       payload[k] = v
@@ -329,18 +377,36 @@ export default function App() {
     window.location.href = 'pebblejs://close#' + encoded
   }
 
-  function handleCancel() {
-    window.location.href = 'pebblejs://close'
-  }
-
   function handleTestBattery() {
     const payload = JSON.stringify({ KEY_TEST_BATTERY_ALERT: 1 })
+    window.location.href = 'pebblejs://close#' + encodeURIComponent(payload)
+  }
+
+  function handleTestCriticalBattery() {
+    const payload = JSON.stringify({ KEY_TEST_CRITICAL_BATTERY_ALERT: 1 })
     window.location.href = 'pebblejs://close#' + encodeURIComponent(payload)
   }
 
   function handleTestBT() {
     const payload = JSON.stringify({ KEY_TEST_BT_DISCONNECT: 1 })
     window.location.href = 'pebblejs://close#' + encodeURIComponent(payload)
+  }
+
+  function handleResetAlerts() {
+    setSettings(prev => ({
+      ...prev,
+      KEY_BT_DISCONNECT_OUTER_COLOR: DEFAULTS.KEY_BT_DISCONNECT_OUTER_COLOR,
+      KEY_BT_DISCONNECT_INNER_COLOR: DEFAULTS.KEY_BT_DISCONNECT_INNER_COLOR,
+      KEY_BATTERY_RING_THRESHOLD:    DEFAULTS.KEY_BATTERY_RING_THRESHOLD,
+      KEY_BATTERY_CENTER_THRESHOLD:  DEFAULTS.KEY_BATTERY_CENTER_THRESHOLD,
+    }))
+  }
+
+  function handleResetAll() {
+    if (window.confirm('Reset ALL settings to defaults?')) {
+      setSettings({ ...DEFAULTS })
+      localStorage.removeItem('brolly_settings')
+    }
   }
 
   return (
@@ -350,18 +416,19 @@ export default function App() {
           <button key={i} className={`tab-btn${tab === i ? ' active' : ''}`}
             onClick={() => setTab(i)}>{t}</button>
         ))}
+        <button className="btn-save tab-save" onClick={handleSave}>Save</button>
       </div>
 
-      <div style={{ paddingBottom: 70 }}>
+      <div style={{ paddingBottom: 20 }}>
         {tab === 0 && <AppearanceTab s={settings} set={set} />}
         {tab === 1 && <WeatherTab s={settings} set={set} />}
         {tab === 2 && <AlertsTab s={settings} set={set}
-          onTestBattery={handleTestBattery} onTestBT={handleTestBT} />}
-      </div>
-
-      <div className="action-bar">
-        <button className="btn-cancel" onClick={handleCancel}>Cancel</button>
-        <button className="btn-save" onClick={handleSave}>Save</button>
+          onTestBattery={handleTestBattery}
+          onTestBT={handleTestBT}
+          onTestCriticalBattery={handleTestCriticalBattery}
+          onResetAlerts={handleResetAlerts}
+          onResetAll={handleResetAll}
+        />}
       </div>
     </div>
   )
